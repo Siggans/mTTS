@@ -4,6 +4,7 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:mTTS"
+        xmlns:utilityCtrl ="clr-namespace:mTTS.Utilities.Controls"
         mc:Ignorable="d"
         SnapsToDevicePixels="True"
         Title="TS3 Text-To-Speech Utility" Height="350" Width="500"
@@ -11,6 +12,7 @@
     <Grid>
         <DockPanel>
             <DockPanel DockPanel.Dock="Bottom">
+                <Grid DockPanel.Dock="Bottom" Height="2"></Grid>
                 <Label DockPanel.Dock="Left" HorizontalAlignment="Left" Margin="5" VerticalAlignment="Top" Height="23" FontWeight="Bold" Padding="5,5,5,2">API Key</Label>
                 <TextBox x:Name="ApiKeyInput" HorizontalAlignment="Stretch"  Margin="0,10,5,2"  TextWrapping="NoWrap" VerticalAlignment="Top" BorderThickness="0,0,0,1" LostFocus="ApiKeyInput_OnLostFocus">
                     <TextBox.ToolTip>
@@ -19,14 +21,9 @@
                 </TextBox>
             </DockPanel>
 
-            <TextBox x:Name="OutputBox" HorizontalAlignment="Stretch" Margin="5" VerticalAlignment="Stretch" Background="#dee" Padding="3"
+            <TextBox x:Name="OutputBox" HorizontalAlignment="Stretch" Margin="2,2,2,4" VerticalAlignment="Stretch" Background="#dee" Padding="3" FontFamily="Consolas"
                  IsReadOnly="True" TextWrapping="NoWrap" HorizontalScrollBarVisibility="Auto"
-                 VerticalScrollBarVisibility="Visible" SnapsToDevicePixels="True">
-                <TextBox.Resources>
-                    <Style TargetType="{x:Type Border}">
-                        <Setter Property="CornerRadius" Value="5" />
-                    </Style>
-                </TextBox.Resources>
+                 VerticalScrollBarVisibility="Visible" SnapsToDevicePixels="True" utilityCtrl:AutoScroller.AlwaysScrollToEnd="True">
             </TextBox>
         </DockPanel>
     </Grid>

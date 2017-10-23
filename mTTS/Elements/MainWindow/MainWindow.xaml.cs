@@ -28,13 +28,14 @@
         {
             if ( this.m_isInitialzed ) return;
             this.m_isInitialzed = true;
-            this.m_textBuffer = new BlockingTextBuffer( 1000 );
+            this.m_textBuffer = new BlockingTextBuffer( 200 );
             this.ApiKeyInput.Text = Configuration.ApiKey;
+            this.OutputTs3StatusMessage( "Initializing Ts3 Service..." );
             TS3ClientQuery.SetApiKey( Configuration.ApiKey);
             TS3ClientQuery.OnStatusMessageUpdate += this.OutputTs3StatusMessage;
             TS3ClientQuery.StartQueryClientAsync();
             SpeechUtil.Initialize();
-            this.OutputTs3StatusMessage( "Initializing Ts3 Service..." );
+            
         }
 
         public string ApiKey { get; set; }

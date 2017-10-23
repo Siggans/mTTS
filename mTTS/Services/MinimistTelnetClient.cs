@@ -5,8 +5,10 @@ namespace mTTS.Services
 
     using System;
     using System.Net.Sockets;
+    using System.Runtime.InteropServices;
     using System.Text;
     using System.Threading.Tasks;
+    using mTTS.Utilities;
 
     enum Verbs
     {
@@ -24,6 +26,64 @@ namespace mTTS.Services
 
     public class MinimistTelnetClient
     {
+        private const int BytesPerLong = 4; // 32 / 8
+        private const int BitsPerByte = 8;
+
+        /// <summary>
+        /// Sets the keep-alive interval for the socket.
+        /// </summary>
+        /// <param name="socket">The socket.</param>
+        /// <param name="time">Time between two keep alive "pings".</param>
+        /// <param name="interval">Time between two keep alive "pings" when first one fails.</param>
+        /// <returns>If the keep alive infos were succefully modified.</returns>
+        private static async Task<bool> SetKeepAlive( Socket socket, ulong time, ulong interval )
+        {
+            try
+            {
+                int retry = 5;
+                while (!socket.Connected)
+                {
+                    await Task.Delay(100);
+                    if (retry-- <= 0)
+                    {
+                        SimpleLogger.Log( nameof( MinimistTelnetClient ), "Cannot set KeepAlive Control Value..  Is server up?" );
+                        return false;
+                    }
+                }
+
+                ulong[] input = new[]
+                {
+                    (time == 0 || interval == 0) ? 0UL : 1UL, // on or off
+                    time,
+                    interval
+                };
+
+                // Pack input into byte struct.
+                byte[] inValue = new byte[3 * BytesPerLong];
+                for ( int i = 0; i < input.Length; i++ )
+                {
+                    inValue[i * BytesPerLong + 3] = (byte)(input[i] >> ((BytesPerLong - 1) * BitsPerByte) & 0xff);
+                    inValue[i * BytesPerLong + 2] = (byte)(input[i] >> ((BytesPerLong - 2) * BitsPerByte) & 0xff);
+                    inValue[i * BytesPerLong + 1] = (byte)(input[i] >> ((BytesPerLong - 3) * BitsPerByte) & 0xff);
+                    inValue[i * BytesPerLong + 0] = (byte)(input[i] >> ((BytesPerLong - 4) * BitsPerByte) & 0xff);
+                }
+
+                // Create bytestruct for result (bytes pending on server socket).
+                byte[] outValue = BitConverter.GetBytes(0);
+
+                // Write SIO_VALS to Socket IOControl.
+                // socket.SetSocketOption( SocketOptionLevel.Tcp, SocketOptionName.KeepAlive, 10000 );
+                socket.IOControl( IOControlCode.KeepAliveValues, inValue, outValue );
+            }
+            catch ( SocketException e )
+            {
+                SimpleLogger.Log( nameof( MinimistTelnetClient ), $"Failed to set keep-alive: {e.ErrorCode} {e}" );
+                return false;
+            }
+            SimpleLogger.Log( nameof( MinimistTelnetClient ), "Initialized KeepAlive." );
+            return true;
+        }
+
         TcpClient m_tcpSocket;
 
         public int m_timeOutMs = 100;
@@ -31,7 +91,13 @@ namespace mTTS.Services
         public MinimistTelnetClient( string Hostname, int Port )
         {
             this.m_tcpSocket = new TcpClient( Hostname, Port );
+            this.m_tcpSocket.Client.SetSocketOption( SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true );
+            this.InitiailzeAsync();
+        }
 
+        private async void InitiailzeAsync()
+        {
+            await SetKeepAlive( this.m_tcpSocket.Client, 1200000, 2000 );
         }
 
         public void Close()

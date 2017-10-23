@@ -1,11 +1,9 @@
-﻿using System;
-namespace mTTS.Services
+﻿namespace mTTS.Services
 {
+    using System;
     using System.Diagnostics;
-    using System.IO;
     using System.Net;
     using System.Net.Sockets;
-    using System.Text;
     using System.Text.RegularExpressions;
     using System.Threading;
     using System.Threading.Tasks;
@@ -73,9 +71,9 @@ namespace mTTS.Services
                     var message = GetConnectionStatusDescription(ConnectionStatus);
                     SimpleLogger.Log( nameof( TS3ClientQuery ), message );
 
-                    if ( ConnectionStatus == CQConnectionStatus.ConnectionReset ||
-                        ConnectionStatus == CQConnectionStatus.Disconnected ||
-                        ConnectionStatus == CQConnectionStatus.WaitingForServer )
+                    if ( ConnectionStatus == CQConnectionStatus.ConnectionReset
+                        || ConnectionStatus == CQConnectionStatus.Disconnected
+                        || ConnectionStatus == CQConnectionStatus.WaitingForServer )
                     {
                         message += $"\nRetrying connection in {RetryTimerInSeconds} seconds...";
                     }
@@ -99,7 +97,7 @@ namespace mTTS.Services
                 case CQConnectionStatus.ConnectionReset:
                     return "Connection was interrupted...";
                 case CQConnectionStatus.WaitingForServer:
-                    return "Waiting for TeamSpeak3 Client with ClientQuery Plugin enabled...";
+                    return "Connection refused.  Is TS3 and ClientQuery Addon enabled?";
                 case CQConnectionStatus.CannotRecover:
                     return
                         "Connection was established but protocol cannot be determined.\nmTT Cannot Recover from this error!";
@@ -119,6 +117,7 @@ namespace mTTS.Services
         private readonly IPEndPoint m_ip;
         private readonly string m_ts3ApiKey;
         private MinimistTelnetClient m_client = null;
+        public int KeepAliveRetryTimer = 90 * 1000;
 
         private TS3ClientQuery( string ip, UInt16 port, string apiKey )
         {
@@ -149,9 +148,13 @@ namespace mTTS.Services
             {
                 MinimistTelnetClient client = this.m_client;
                 TS3ClientQuery.LastException = e;
-                client.Close();
+                client?.Close();
 
                 Log( "Exception Occurred: " + e.Message );
+                if ( e is SocketException ex && ex.ErrorCode == 10061 )
+                {
+                    return CQConnectionStatus.WaitingForServer;
+                }
                 return CQConnectionStatus.ConnectionReset;
             }
             finally
@@ -183,19 +186,41 @@ namespace mTTS.Services
 
             if ( !await this.RegisterForTextMessagesAsync() ) { return CQConnectionStatus.CannotRecover; }
 
-
+            this.KeepTSGreateAgain( initialize: true ); // Start the timing mechanism.
             while ( true )
             {
                 string textMsg = await this.m_client.ReadAsync();
                 if ( textMsg == null ) { return CQConnectionStatus.Disconnected; }
                 if ( textMsg == "" )
                 {
-                    await Task.Delay( 1000 / 45 );
+                    await Task.Delay( 1000 / 50 );
+                    this.KeepTSGreateAgain(); // Let's do the keep-alive event here.
                     continue;
                 }
-                if ( textMsg.EndsWith( "\n" ) ) { textMsg = textMsg.Replace( "\n", "" ); }
+                if ( textMsg.EndsWith( "\n" ) ) { textMsg = textMsg.Substring( 0, textMsg.Length - 1 ); }
                 LogClientResponse( textMsg );
                 this.PrepareTtsSendOff( textMsg );
+            }
+        }
+
+        private int m_startTimeKA;
+        private void KeepTSGreateAgain( bool initialize = false )
+        {
+            // ClientQuery ignores KeepAlive request and seems to cut off the connection every 10-20 minutes. We will
+            // try to send a 'use' command every few minutes to keep the connection going. The return response is 
+            // unimportant to us as the message loop will eat up and discard the 'use' response, and we won't need to worry 
+            // about accidentally eating up the notification response.
+            if ( initialize )
+            {
+                this.m_startTimeKA = Environment.TickCount;
+                return;
+            }
+
+            var duration = Environment.TickCount - this.m_startTimeKA;
+            if ( duration >= this.KeepAliveRetryTimer )
+            {
+                this.m_startTimeKA = Environment.TickCount;
+                this.m_client.WriteLine( "use" ); // Do a raw send.
             }
         }
 
@@ -203,16 +228,25 @@ namespace mTTS.Services
             new Regex(
                 @"^notifytextmessage schandlerid=\S+ targetmode=\S+ msg=(\S+) invokerid=\S+ invokername=(\S+) invokeruid=\S+$",
                 RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
         private void PrepareTtsSendOff( string textMsg )
         {
-            Match match = _TextMessageEventMatcher.Match(textMsg);
-            if ( match.Success )
+            // We may receive a multi-line response here.  Let's process them all.
+            string[] tokens = textMsg.Split(new char[] {'\r', '\n'}, StringSplitOptions.RemoveEmptyEntries);
+            foreach ( var token in tokens )
             {
+                Match match = _TextMessageEventMatcher.Match(token);
+                if ( !match.Success )
+                {
+                    return;
+                }
+
                 var user = match.Groups[2].Value.Replace("\\s", " ");
                 var message = match.Groups[1].Value.Replace("\\s", " ");
                 SendStatueMessage( $"User {user} entered \"{message}\"" );
-                SpeechUtil.TextToSpeech(user, message);
+                SpeechUtil.TextToSpeech( user, message );
             }
+
         }
 
         private async Task<bool> RegisterForTextMessagesAsync()
@@ -271,19 +305,20 @@ namespace mTTS.Services
         [Conditional( "DEBUG" )]
         private static void LogClientResponse( string msg )
         {
-            Log( $"response => {msg}" );
+            Log( $" <= {msg}" );
         }
 
         [Conditional( "DEBUG" )]
         private static void LogClientSend( string msg )
         {
-            Log( $"send <= {msg}" );
+            Log( $" => {msg}" );
         }
 
         [Conditional( "DEBUG" )]
         private static void Log( string msg )
         {
-            SimpleLogger.Log( nameof( TS3ClientQuery ), msg );
+            if ( msg != null && msg.EndsWith( "\n" ) ) { msg = msg.Substring( 0, msg.Length - 1 ); }
+            SimpleLogger.Log( nameof( TS3ClientQuery ), msg ?? "" );
         }
 
         private class ParseMessage

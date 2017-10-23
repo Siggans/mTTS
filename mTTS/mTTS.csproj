@@ -62,6 +62,7 @@
     <Compile Include="Services\TS3ClientQuery.cs" />
     <Compile Include="Utilities\BlockingTextBuffer.cs" />
     <Compile Include="Utilities\Configuration\Configuration.cs" />
+    <Compile Include="Utilities\Controls\AutoScroller.cs" />
     <Compile Include="Utilities\SimpleLogger.cs" />
     <Compile Include="Utilities\Util.cs" />
     <Page Include="Elements\MainWindow\MainWindow.xaml">
@@ -103,8 +104,6 @@
   <ItemGroup>
     <None Include="App.config" />
   </ItemGroup>
-  <ItemGroup>
-    <Folder Include="Utilities\Controls\" />
-  </ItemGroup>
+  <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
