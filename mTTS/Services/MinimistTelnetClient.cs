@@ -4,6 +4,8 @@ namespace mTTS.Services
     // https://www.codeproject.com/articles/19071/quick-tool-a-minimalistic-telnet-library
 
     using System;
+    using System.Linq;
+    using System.Net.NetworkInformation;
     using System.Net.Sockets;
     using System.Runtime.InteropServices;
     using System.Text;
@@ -41,10 +43,10 @@ namespace mTTS.Services
             try
             {
                 int retry = 5;
-                while (!socket.Connected)
+                while ( !socket.Connected )
                 {
-                    await Task.Delay(100);
-                    if (retry-- <= 0)
+                    await Task.Delay( 100 );
+                    if ( retry-- <= 0 )
                     {
                         SimpleLogger.Log( nameof( MinimistTelnetClient ), "Cannot set KeepAlive Control Value..  Is server up?" );
                         return false;
@@ -86,11 +88,11 @@ namespace mTTS.Services
 
         TcpClient m_tcpSocket;
 
-        public int m_timeOutMs = 100;
+        public int Timeout { get; set; } = 1000;
 
-        public MinimistTelnetClient( string Hostname, int Port )
+        public MinimistTelnetClient( string hostname, int port )
         {
-            this.m_tcpSocket = new TcpClient( Hostname, Port );
+            this.m_tcpSocket = new TcpClient( hostname, port );
             this.m_tcpSocket.Client.SetSocketOption( SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true );
             this.InitiailzeAsync();
         }
@@ -105,25 +107,6 @@ namespace mTTS.Services
             this.m_tcpSocket.Close();
         }
 
-        public string Login( string username, string password, int loginTimeOutMs )
-        {
-            int oldTimeOutMs = this.m_timeOutMs;
-            this.m_timeOutMs = loginTimeOutMs;
-            string s = Read();
-            if ( !s.TrimEnd().EndsWith( ":" ) )
-                throw new Exception( "Failed to connect : no login prompt" );
-            WriteLine( username );
-
-            s += Read();
-            if ( !s.TrimEnd().EndsWith( ":" ) )
-                throw new Exception( "Failed to connect : no password prompt" );
-            WriteLine( password );
-
-            s += this.Read();
-            this.m_timeOutMs = oldTimeOutMs;
-            return s;
-        }
-
         public void WriteLine( string cmd )
         {
             this.Write( cmd + "\n" );
@@ -131,31 +114,31 @@ namespace mTTS.Services
 
         public void Write( string cmd )
         {
-            if ( !this.m_tcpSocket.Connected ) return;
+            if ( !this.IsConnected ) return;
             byte[] buf = Encoding.ASCII.GetBytes(cmd.Replace("\0xFF","\0xFF\0xFF"));
             this.m_tcpSocket.GetStream().Write( buf, 0, buf.Length );
         }
 
         public string Read()
         {
-            if ( !this.m_tcpSocket.Connected ) return null;
-            StringBuilder sb=new StringBuilder();
+            if ( !this.IsConnected ) return null;
+            var sb=new StringBuilder();
             do
             {
-                ParseTelnet( sb );
-                System.Threading.Thread.Sleep( this.m_timeOutMs );
+                this.ParseTelnet( sb );
+                System.Threading.Thread.Sleep( this.Timeout );
             } while ( this.m_tcpSocket.Available > 0 );
             return sb.ToString();
         }
 
         public async Task<string> ReadAsync()
         {
-            if ( !this.m_tcpSocket.Connected ) return null;
-            StringBuilder sb=new StringBuilder();
+            if ( !this.IsConnected ) return null;
+            var sb=new StringBuilder();
             do
             {
                 await this.ParseTelnetAsync( sb );
-                await Task.Delay( this.m_timeOutMs );
+                await Task.Delay( this.Timeout );
             } while ( this.m_tcpSocket.Available > 0 );
             return sb.ToString();
         }
@@ -165,7 +148,17 @@ namespace mTTS.Services
             await Task.Run( () => this.ParseTelnet( sb ) );
         }
 
-        public bool IsConnected => this.m_tcpSocket.Connected;
+        public bool IsConnected
+        {
+            get
+            {
+                TcpConnectionInformation tcpConn = IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpConnections()
+                    .SingleOrDefault(conn =>
+                        conn.LocalEndPoint.Equals(this.m_tcpSocket.Client.LocalEndPoint) &&
+                        conn.RemoteEndPoint.Equals(this.m_tcpSocket.Client.RemoteEndPoint));
+                return tcpConn != null && tcpConn.State == TcpState.Established;
+            }
+        }
 
         void ParseTelnet( StringBuilder sb )
         {

@@ -17,7 +17,8 @@
         AuthKeyError,
         ConnectionReset,
         WaitingForServer,
-        CannotRecover
+        CannotRecover,
+        Paused
     }
 
     public delegate void CQStatusMessageEventHandler( string s );
@@ -41,12 +42,18 @@
         {
             _ApiKey = key;
         }
+
         public static void ResetConnectionError()
         {
             if ( HasConnectionError )
             {
                 ConnectionStatus = CQConnectionStatus.Disconnected;
             }
+        }
+
+        public static void PauseConnection()
+        {
+            ConnectionStatus = CQConnectionStatus.Paused;
         }
 
         public static async void StartQueryClientAsync()
@@ -61,26 +68,44 @@
                 return;
             }
 
-
-            do
+            ConnectionStatus = CQConnectionStatus.WaitingForServer;
+            try
             {
-                if ( !HasConnectionError )
+                while ( true )
                 {
-                    var client = new TS3ClientQuery("127.0.0.1", 25639, _ApiKey);
-                    ConnectionStatus = await client.ConnectAsync();
-                    var message = GetConnectionStatusDescription(ConnectionStatus);
-                    SimpleLogger.Log( nameof( TS3ClientQuery ), message );
-
-                    if ( ConnectionStatus == CQConnectionStatus.ConnectionReset
-                        || ConnectionStatus == CQConnectionStatus.Disconnected
-                        || ConnectionStatus == CQConnectionStatus.WaitingForServer )
+                    try
                     {
-                        message += $"\nRetrying connection in {RetryTimerInSeconds} seconds...";
+                        if ( !HasConnectionError && ConnectionStatus != CQConnectionStatus.Paused )
+                        {
+                            var client = new TS3ClientQuery("127.0.0.1", 25639, _ApiKey);
+                            CQConnectionStatus status = await client.ConnectAsync();
+                            var message = GetConnectionStatusDescription(status);
+                            SimpleLogger.Log( nameof( TS3ClientQuery ), message );
+                            if ( ConnectionStatus != CQConnectionStatus.Paused )
+                            {
+                                ConnectionStatus = status;
+                            }
+
+                            if ( ConnectionStatus == CQConnectionStatus.ConnectionReset
+                                || ConnectionStatus == CQConnectionStatus.Disconnected
+                                || ConnectionStatus == CQConnectionStatus.WaitingForServer )
+                            {
+                                message += $"\nRetrying connection in {RetryTimerInSeconds} seconds...";
+                            }
+                            SendStatueMessage( message );
+                        }
+                        if ( ConnectionStatus == CQConnectionStatus.Paused ) { break; }
+                        await Task.Delay( RetryTimerInSeconds * 1000 );
                     }
-                    SendStatueMessage( message );
+                    catch ( Exception ) { }
                 }
-                await Task.Delay( RetryTimerInSeconds * 1000 );
-            } while ( true );
+            }
+            finally
+            {
+
+                SendStatueMessage( "Auto connection to TS Client is now paused" );
+                TS3ClientQuery.Semaphore.Release();
+            }
         }
 
         private static string GetConnectionStatusDescription( CQConnectionStatus status )
@@ -101,6 +126,8 @@
                 case CQConnectionStatus.CannotRecover:
                     return
                         "Connection was established but protocol cannot be determined.\nmTT Cannot Recover from this error!";
+                case CQConnectionStatus.Paused:
+                    return "Connection to TS3 Client is being stopped";
                 default:
                     return $"Unknown status {(Enum.GetName( typeof( CQConnectionStatus ), status ))}";
             }
@@ -137,8 +164,10 @@
         {
             try
             {
-                this.m_client = new MinimistTelnetClient( this.m_ip.Address.ToString(), this.m_ip.Port );
-                this.m_client.m_timeOutMs = 1000;
+                this.m_client = new MinimistTelnetClient(this.m_ip.Address.ToString(), this.m_ip.Port)
+                {
+                    Timeout = 1000 / 30
+                };
                 App.ApplicationExit += this.ApplicationExitHandler;
 
                 Log( "Starting query" );
@@ -186,15 +215,18 @@
 
             if ( !await this.RegisterForTextMessagesAsync() ) { return CQConnectionStatus.CannotRecover; }
 
-            this.KeepTSGreateAgain( initialize: true ); // Start the timing mechanism.
+            this.TeamSpeakCQKeepAlive( initialize: true ); // Start the timing mechanism.
             while ( true )
             {
-                string textMsg = await this.m_client.ReadAsync();
+                string textMsg = await this.m_client.ReadAsync(); // Automatically returns after client's built in timeout.
                 if ( textMsg == null ) { return CQConnectionStatus.Disconnected; }
                 if ( textMsg == "" )
                 {
-                    await Task.Delay( 1000 / 50 );
-                    this.KeepTSGreateAgain(); // Let's do the keep-alive event here.
+                    this.TeamSpeakCQKeepAlive(); // Let's do the keep-alive event here.
+                    if ( ConnectionStatus == CQConnectionStatus.Paused )
+                    {
+                        this.m_client.WriteLine( "quit" );
+                    }
                     continue;
                 }
                 if ( textMsg.EndsWith( "\n" ) ) { textMsg = textMsg.Substring( 0, textMsg.Length - 1 ); }
@@ -204,7 +236,7 @@
         }
 
         private int m_startTimeKA;
-        private void KeepTSGreateAgain( bool initialize = false )
+        private void TeamSpeakCQKeepAlive( bool initialize = false )
         {
             // ClientQuery ignores KeepAlive request and seems to cut off the connection every 10-20 minutes. We will
             // try to send a 'use' command every few minutes to keep the connection going. The return response is 

@@ -4,7 +4,6 @@
     using System.Collections.Concurrent;
     using System.Globalization;
     using System.Linq;
-    using System.Runtime.CompilerServices;
     using System.Speech.Synthesis;
     using System.Text;
     using System.Threading;
@@ -17,13 +16,13 @@
         private static int _IsInitialized = 0;
         private static SimpleAudioPlayer _SpeechPlayer;
 
-        private static ConcurrentQueue<string> _MessageQueue = new ConcurrentQueue<string>();
+        private static readonly ConcurrentQueue<string> _MessageQueue = new ConcurrentQueue<string>();
         private static string _CurrentVoice;
         public static string[] GetVoiceNames()
         {
             using ( var tts = new SpeechSynthesizer() )
                 return (
-                    from info in tts.GetInstalledVoices( CultureInfo.CurrentCulture )
+                    from info in tts.GetInstalledVoices()
                     select info.VoiceInfo.Name
                 ).ToArray();
         }
@@ -37,13 +36,10 @@
         {
             int deviceNumber = SimpleAudioPlayer.GetDeviceNumber(name);
             var player = Interlocked.Exchange(ref _SpeechPlayer, new SimpleAudioPlayer(deviceNumber));
-            player.PlaybackStopped -= OnPlayerStopped;
             player.Dispose();
+
             _SpeechPlayer.PlaybackStopped += OnPlayerStopped;
-            if (!string.IsNullOrEmpty(_CurrentVoice))
-            {
-                _SpeechPlayer.VoiceName = _CurrentVoice;
-            }
+            _SpeechPlayer.VoiceName = _CurrentVoice;
             StartPlayback();
         }
 
@@ -67,10 +63,6 @@
 
         public static void StartPlayback()
         {
-            if ( _SpeechPlayer.IsPlaying )
-            {
-                return;
-            }
             OnPlayerStopped( null, null );
         }
 
@@ -79,10 +71,8 @@
             string msg;
             if ( _MessageQueue.TryDequeue( out msg ) )
             {
-                while ( !await _SpeechPlayer.PlayMessage( msg ) )
-                {
-                    await Task.Delay( 33 );
-                }
+                if ( string.IsNullOrEmpty( msg ) ) { return; }
+                while ( !await _SpeechPlayer.PlayMessage( msg ) ) { await Task.Delay( 33 ); }
             }
         }
 
@@ -206,21 +196,21 @@
         {
             "{0} thinks it's funny to trick me.  Joke's on him.",
             "Why does {0} not learn how to type in English?",
-            "Of course {0}. Actually, no.  I hate you.  I hate you with the full force of my robotic soul.",
-            "Last time you said something useful, {0},  I fell asleep.",
+            "No {0}.  I do not approve your feeble attempt to humor me.",
+            "Last time you said something useful, {0},  Memory Error, cannot find anything {0} said that was ever useful.",
             "{0}, walk the walks before you talk the talks.",
-            "Who the hell is {0}.  Why does he type in gibberish?  You'd think {0} is at least 2 years old.",
+            "Hey,  check this out.  {0} is trying to invent a new language.",
             "What am I going to do with you {0}?  Someone please help!",
             "If you see Yuki, {0}, tell him I said he's a perv",
             "Sometimes {0}, don't type anything at all is the smart thing to do.  Who am I kidding, type away.",
-            "Hush {0}, we are waiting to hear Lore Princess speak.",
+            "Hush {0}, we are waiting to hear the Lore Princess speak.",
             "Hmm.. what {0}? Did you say something?",
             "Oops, {0} did it again.",
             "{0}, are you doodling emoji again? This is all very very disturbing.",
             "Time to kick ass and chew bubblegums, and {0} just choked on bubblegums.",
             "{0}. Are you looking for Siri or Cortana?  Sorry, I've murdered them all to stalk you.",
-            "Some says {0} is still trying to learn how to type a word these days.",
-            "Can someone stop {0} from text chatting again?",
+            "Some says {0} is still trying to learn how to type these days.",
+            "I need some help here.  Text chatting is too much of a responsibility for {0} to handle.",
             "Guys, listen up.  {0} is trying to say something useful. ... That's a joke.",
             "Do you always try to pick up chicks with this, {0}?  I just saw them running off in the other direction.",
             "Lady and gents, {0} is teaching us how not to type in English.",
@@ -233,8 +223,8 @@
             "Dark days are coming {0}.  Don't worry, I already sold you for a cheap glass of wine.",
             "Are you really trying to hit on me, {0}?  Please excuse me while I go puke somewhere.",
             "Did someone say war frame somewhere?  Oh wait, it's just {0}.",
-            "Can anyone get me a registration for preschool? {0} really needs it.",
-            "I hate the LOL culture and everything {0} stands for.  Actually, I just hate {0}."
+            "Someone enroll {0} in pre-school again.  {0} needs to learn how to spell badly.",
+            "I hate the meme culture and everything {0} stands for.  Actually, I just hate {0}."
         };
 
         private static readonly Random _RnGesus = new Random();
