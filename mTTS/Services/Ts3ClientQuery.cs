@@ -220,7 +220,7 @@
             if ( duration >= this.KeepAliveRetryTimer )
             {
                 this.m_startTimeKA = Environment.TickCount;
-                this.m_client.WriteLine( "use" ); // Do a raw send.
+                this.m_client.WriteLine( "" ); // Do an empty cmd for keep-alive.
             }
         }
 
@@ -232,7 +232,7 @@
         private void PrepareTtsSendOff( string textMsg )
         {
             // We may receive a multi-line response here.  Let's process them all.
-            string[] tokens = textMsg.Split(new char[] {'\r', '\n'}, StringSplitOptions.RemoveEmptyEntries);
+            string[] tokens = textMsg.Split(new [] {'\r', '\n'}, StringSplitOptions.RemoveEmptyEntries);
             foreach ( var token in tokens )
             {
                 Match match = _TextMessageEventMatcher.Match(token);
@@ -265,7 +265,7 @@
             return response.IsValid && !response.IsError;
         }
 
-        private static readonly Regex _UseCmdMatch = new Regex(@"^selected\sschandlerid=(\S)+\n", RegexOptions.Compiled | RegexOptions.Multiline);
+        private static readonly Regex _UseCmdMatch = new Regex(@"^selected schandlerid=(\S)+\n", RegexOptions.Compiled | RegexOptions.Multiline);
         private async Task<string> GetHandlerIdAsync()
         {
             string response = await this.SendCommandAsync("use");

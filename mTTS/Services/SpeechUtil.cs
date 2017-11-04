@@ -1,74 +1,131 @@
 ﻿namespace mTTS.Services
 {
     using System;
+    using System.Collections.Concurrent;
     using System.Globalization;
+    using System.Linq;
+    using System.Runtime.CompilerServices;
     using System.Speech.Synthesis;
     using System.Text;
     using System.Threading;
     using System.Threading.Tasks;
     using mTTS.Utilities;
+    using NAudio.Wave;
 
     public class SpeechUtil
     {
-        private static SpeechSynthesizer _Synth;
         private static int _IsInitialized = 0;
+        private static SimpleAudioPlayer _SpeechPlayer;
+
+        private static ConcurrentQueue<string> _MessageQueue = new ConcurrentQueue<string>();
+        private static string _CurrentVoice;
+        public static string[] GetVoiceNames()
+        {
+            using ( var tts = new SpeechSynthesizer() )
+                return (
+                    from info in tts.GetInstalledVoices( CultureInfo.CurrentCulture )
+                    select info.VoiceInfo.Name
+                ).ToArray();
+        }
+
+        public static string[] GetPlaybackDeviceNames()
+        {
+            return SimpleAudioPlayer.GetPlaybackDeviceNames();
+        }
+
+        public static void ChangePlaybakcDevice( string name )
+        {
+            int deviceNumber = SimpleAudioPlayer.GetDeviceNumber(name);
+            var player = Interlocked.Exchange(ref _SpeechPlayer, new SimpleAudioPlayer(deviceNumber));
+            player.PlaybackStopped -= OnPlayerStopped;
+            player.Dispose();
+            _SpeechPlayer.PlaybackStopped += OnPlayerStopped;
+            if (!string.IsNullOrEmpty(_CurrentVoice))
+            {
+                _SpeechPlayer.VoiceName = _CurrentVoice;
+            }
+            StartPlayback();
+        }
+
+        public static void ChangeVoice( string name )
+        {
+            _SpeechPlayer.VoiceName = _CurrentVoice = name;
+        }
 
         public static void Initialize()
         {
             var isInitialized = Interlocked.Exchange(ref _IsInitialized, 1);
             if ( isInitialized == 1 ) { return; }
+            _SpeechPlayer = new SimpleAudioPlayer();
+            _SpeechPlayer.PlaybackStopped += OnPlayerStopped;
 
-            _Synth = new SpeechSynthesizer();
-            _Synth.SetOutputToDefaultAudioDevice();
-            SetVoiceGender( VoiceGender.Female );
             App.ApplicationExit += ( e ) =>
             {
-                _Synth.Dispose();
+                _SpeechPlayer?.Dispose();
             };
         }
 
-        private static void SetVoiceGender( VoiceGender gender )
+        public static void StartPlayback()
         {
-            System.Collections.ObjectModel.ReadOnlyCollection<InstalledVoice> voiceInfos = _Synth.GetInstalledVoices(CultureInfo.CurrentCulture);
-            foreach ( InstalledVoice info in voiceInfos )
+            if ( _SpeechPlayer.IsPlaying )
             {
-                if ( info.VoiceInfo.Gender == gender )
+                return;
+            }
+            OnPlayerStopped( null, null );
+        }
+
+        private static async void OnPlayerStopped( object sender, StoppedEventArgs e )
+        {
+            string msg;
+            if ( _MessageQueue.TryDequeue( out msg ) )
+            {
+                while ( !await _SpeechPlayer.PlayMessage( msg ) )
                 {
-                    _Synth.SelectVoice( info.VoiceInfo.Name );
-                    SimpleLogger.Log( nameof( SpeechUtil ), $"Voice Selected => {info?.VoiceInfo.Name}" );
-                    return;
+                    await Task.Delay( 33 );
                 }
             }
-            // Stick with default if we can't find a voice pack.
         }
 
         public static async void TextToSpeech( string userName, string input )
         {
-
             await Task.Run( () =>
              {
                  Initialize();
                  bool hasUri = false;
-                 var name = RemoveSymbols(userName);
+                 var name = RemoveSymbols(userName) ?? "Unknown";
                  var msg = ProcessText(input, out hasUri);
 
-                 _Synth.SpeakAsyncCancelAll(); // Let's only the latest chat line.
                  if ( hasUri )
                  {
-                     _Synth.SpeakAsync( $"{name} has posted a web address." );
+                     BotSpeak( $"{name} has posted a web address." );
                  }
                  else
                  {
                      SimpleLogger.Log( nameof( SpeechUtil ), $"msg => \"{input}\" : \"{msg}\"" );
-                     if ( string.IsNullOrEmpty( msg.Trim() ) )
+                     if ( string.IsNullOrEmpty( msg?.Trim() ) )
                      {
-                         _Synth.SpeakAsync( FunnyOrDie( name ) );
+                         BotSpeak( GetRandomQuote( name ) );
                          return;
                      }
 
-                     _Synth.SpeakAsync( $"{name} says {msg}" );
+                     BotSpeak( $"{name} says {msg}" );
                  }
              } );
+        }
+
+        private static void BotSpeak( string msg )
+        {
+            _MessageQueue.Enqueue( msg );
+            StartPlayback();
+        }
+
+        public static async void TextToSpeech( string input )
+        {
+            if ( Util.IsUiThread ) { await Task.Run( () => BotSpeak( input ) ); }
+            else
+            {
+                BotSpeak( input );
+            }
         }
 
         private static readonly char[] _Tokenizer = {'\r', '\n', ' ', '\t'};
@@ -85,43 +142,63 @@
                     return input;
                 }
 
-                RemoveSymbols( token, sb );
+                if ( null == RemoveSymbols( token, sb ) )
+                {
+                    return null;
+                }
                 sb.Append( ' ' );
             }
             return sb.ToString();
         }
 
-
         private static string RemoveSymbols( string value, StringBuilder _sb = null )
         {
+            const int MaxRepeat = 3;
             if ( string.IsNullOrEmpty( value ) || string.IsNullOrEmpty( value.Trim() ) ) { value = "Unknown"; }
             var sb = _sb ?? new StringBuilder();
             value = value.Trim();
             if ( value.Length == 1 )
             {
-                return Char.IsControl( value[0] ) ? "." : value;
+                string s = Char.IsControl(value[0]) ? "." : value;
+                sb.Append( s );
+                return s;
             }
 
             int appended = 0;
+            char lastChar = (char) 0;
+            int repeatCount = 1;
             for ( var i = 0; i < value.Length - 1; i++ )
             {
                 if ( Char.IsLetterOrDigit( value[i] ) )
                 {
+                    if ( lastChar == Char.ToLowerInvariant( value[i] ) )
+                    {
+                        repeatCount++;
+                        if ( repeatCount > MaxRepeat )
+                        {
+                            return null;
+                        }
+                    }
+                    else
+                    {
+                        lastChar = Char.ToLowerInvariant( value[i] );
+                        repeatCount = 1;
+                    }
                     appended++;
                     sb.Append( value[i] );
                 }
             }
 
             var c = value[value.Length - 1];
+            if ( appended != 0 && lastChar == Char.ToLowerInvariant( c ) && ++repeatCount > MaxRepeat )
+            {
+                return null;
+            }
             if ( Char.IsLetterOrDigit( c ) || Char.IsPunctuation( c ) || Char.IsSurrogate( c ) || Char.IsSeparator( c ) )
             {
-                if ( appended != 0 || Char.IsLetterOrDigit( c ) )
-                {
-                    sb.Append( c );
-                }
-
+                if ( appended != 0 || Char.IsLetterOrDigit( c ) ) { sb.Append( c ); }
             }
-            return _sb == null ? sb.ToString() : null;
+            return _sb == null ? sb.ToString() : string.Empty;
 
         }
 
@@ -161,9 +238,8 @@
         };
 
         private static readonly Random _RnGesus = new Random();
-        private static string FunnyOrDie( string user )
+        private static string GetRandomQuote( string user )
         {
-
             return string.Format( _RandomQuotes[_RnGesus.Next( _RandomQuotes.Length )], user );
         }
     }
