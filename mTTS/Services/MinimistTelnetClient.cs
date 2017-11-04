@@ -4,6 +4,7 @@ namespace mTTS.Services
     // https://www.codeproject.com/articles/19071/quick-tool-a-minimalistic-telnet-library
 
     using System;
+    using System.IO;
     using System.Linq;
     using System.Net.NetworkInformation;
     using System.Net.Sockets;
@@ -11,6 +12,7 @@ namespace mTTS.Services
     using System.Text;
     using System.Threading.Tasks;
     using mTTS.Utilities;
+    using NAudio.MediaFoundation;
 
     enum Verbs
     {
@@ -28,78 +30,16 @@ namespace mTTS.Services
 
     public class MinimistTelnetClient
     {
-        private const int BytesPerLong = 4; // 32 / 8
-        private const int BitsPerByte = 8;
 
-        /// <summary>
-        /// Sets the keep-alive interval for the socket.
-        /// </summary>
-        /// <param name="socket">The socket.</param>
-        /// <param name="time">Time between two keep alive "pings".</param>
-        /// <param name="interval">Time between two keep alive "pings" when first one fails.</param>
-        /// <returns>If the keep alive infos were succefully modified.</returns>
-        private static async Task<bool> SetKeepAlive( Socket socket, ulong time, ulong interval )
-        {
-            try
-            {
-                int retry = 5;
-                while ( !socket.Connected )
-                {
-                    await Task.Delay( 100 );
-                    if ( retry-- <= 0 )
-                    {
-                        SimpleLogger.Log( nameof( MinimistTelnetClient ), "Cannot set KeepAlive Control Value..  Is server up?" );
-                        return false;
-                    }
-                }
-
-                ulong[] input = new[]
-                {
-                    (time == 0 || interval == 0) ? 0UL : 1UL, // on or off
-                    time,
-                    interval
-                };
-
-                // Pack input into byte struct.
-                byte[] inValue = new byte[3 * BytesPerLong];
-                for ( int i = 0; i < input.Length; i++ )
-                {
-                    inValue[i * BytesPerLong + 3] = (byte)(input[i] >> ((BytesPerLong - 1) * BitsPerByte) & 0xff);
-                    inValue[i * BytesPerLong + 2] = (byte)(input[i] >> ((BytesPerLong - 2) * BitsPerByte) & 0xff);
-                    inValue[i * BytesPerLong + 1] = (byte)(input[i] >> ((BytesPerLong - 3) * BitsPerByte) & 0xff);
-                    inValue[i * BytesPerLong + 0] = (byte)(input[i] >> ((BytesPerLong - 4) * BitsPerByte) & 0xff);
-                }
-
-                // Create bytestruct for result (bytes pending on server socket).
-                byte[] outValue = BitConverter.GetBytes(0);
-
-                // Write SIO_VALS to Socket IOControl.
-                // socket.SetSocketOption( SocketOptionLevel.Tcp, SocketOptionName.KeepAlive, 10000 );
-                socket.IOControl( IOControlCode.KeepAliveValues, inValue, outValue );
-            }
-            catch ( SocketException e )
-            {
-                SimpleLogger.Log( nameof( MinimistTelnetClient ), $"Failed to set keep-alive: {e.ErrorCode} {e}" );
-                return false;
-            }
-            SimpleLogger.Log( nameof( MinimistTelnetClient ), "Initialized KeepAlive." );
-            return true;
-        }
 
         TcpClient m_tcpSocket;
 
         public int Timeout { get; set; } = 1000;
+        public Encoding Encoding = Encoding.UTF8;
 
         public MinimistTelnetClient( string hostname, int port )
         {
             this.m_tcpSocket = new TcpClient( hostname, port );
-            this.m_tcpSocket.Client.SetSocketOption( SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true );
-            this.InitiailzeAsync();
-        }
-
-        private async void InitiailzeAsync()
-        {
-            await SetKeepAlive( this.m_tcpSocket.Client, 1200000, 2000 );
         }
 
         public void Close()
@@ -115,7 +55,7 @@ namespace mTTS.Services
         public void Write( string cmd )
         {
             if ( !this.IsConnected ) return;
-            byte[] buf = Encoding.ASCII.GetBytes(cmd.Replace("\0xFF","\0xFF\0xFF"));
+            byte[] buf = this.Encoding.GetBytes(cmd);
             this.m_tcpSocket.GetStream().Write( buf, 0, buf.Length );
         }
 
@@ -160,49 +100,23 @@ namespace mTTS.Services
             }
         }
 
+        private Stream m_utfReader;
+        private readonly byte[] m_buffer = new byte[4096];
         void ParseTelnet( StringBuilder sb )
         {
+            int count = 0;
+            byte b;
             while ( this.m_tcpSocket.Available > 0 )
             {
-                int input = this.m_tcpSocket.GetStream().ReadByte();
-                switch ( input )
+                this.m_buffer[count++] = b = (byte)this.m_tcpSocket.GetStream().ReadByte();
+                if ( (char)b == '\r' ) { continue; }
+                if ( count >= this.m_buffer.Length )
                 {
-                    case -1:
-                        break;
-                    case (int)Verbs.IAC:
-                        // interpret as command
-                        int inputverb = this.m_tcpSocket.GetStream().ReadByte();
-                        if ( inputverb == -1 ) break;
-                        switch ( inputverb )
-                        {
-                            case (int)Verbs.IAC:
-                                //literal IAC = 255 escaped, so append char 255 to string
-                                sb.Append( inputverb );
-                                break;
-                            case (int)Verbs.DO:
-                            case (int)Verbs.DONT:
-                            case (int)Verbs.WILL:
-                            case (int)Verbs.WONT:
-                                // reply to all commands with "WONT", unless it is SGA (suppres go ahead)
-                                int inputoption = this.m_tcpSocket.GetStream().ReadByte();
-                                if ( inputoption == -1 ) break;
-                                this.m_tcpSocket.GetStream().WriteByte( (byte)Verbs.IAC );
-                                if ( inputoption == (int)Options.SGA )
-                                    this.m_tcpSocket.GetStream().WriteByte( inputverb == (int)Verbs.DO ? (byte)Verbs.WILL : (byte)Verbs.DO );
-                                else
-                                    this.m_tcpSocket.GetStream().WriteByte( inputverb == (int)Verbs.DO ? (byte)Verbs.WONT : (byte)Verbs.DONT );
-                                this.m_tcpSocket.GetStream().WriteByte( (byte)inputoption );
-                                break;
-                            default:
-                                break;
-                        }
-                        break;
-                    default:
-                        if ( (char)input == '\r' ) { break; }
-                        sb.Append( (char)input );
-                        break;
+                    sb.Append( this.Encoding.GetString( this.m_buffer, 0, count ).Replace( "\r", "" ) );
+                    count = 0;
                 }
             }
+            if ( count != 0 ) { sb.Append( this.Encoding.GetString( this.m_buffer, 0, count ).Replace( "\r", "" ) ); }
         }
     }
 }
